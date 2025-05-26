@@ -22,7 +22,7 @@ find_package(ROOT CONFIG REQUIRED
 )
 
 file(GLOB SOURCES
-     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
+     "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
 )
 
 add_executable(rntuple_scaling ${SOURCES})

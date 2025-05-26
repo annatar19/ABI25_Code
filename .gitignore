@@ -4,4 +4,5 @@
 !.gitignore
 !CMakeLists.txt
 !run.sh
-!**/src/**/*.cpp
+!**/*.cpp
+**/build/**/*.cpp
