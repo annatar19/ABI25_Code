@@ -177,9 +177,12 @@ int main(int argc, char **argv) {
   options.SetCompression(ROOT::RCompressionSetting::EAlgorithm::EValues::kZSTD,
                          5);
 
-  std::string new_name = kNTupleFileName + std::string(".out");
+  // The scaled file is outputted to the output dir with the scaling factor
+  // prepended.
+  std::string pathName =
+      std::string("../output/") + argv[3] + std::string("x_") + kNTupleFileName;
   std::unique_ptr<ROOT::RNTupleWriter> writer = ROOT::RNTupleWriter::Recreate(
-      std::move(model), kNTupleName, new_name, options);
+      std::move(model), kNTupleName, pathName, options);
 
   std::cout << "Starting the scaling…" << std::endl;
   const long double scale = std::stold(argv[3]);
