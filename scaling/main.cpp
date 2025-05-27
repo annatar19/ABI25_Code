@@ -1,4 +1,5 @@
 #include <ROOT/RNTuple.hxx>
+#include <ROOT/RNTupleModel.hxx>
 #include <ROOT/RNTupleReader.hxx>
 #include <ROOT/RNTupleWriteOptions.hxx>
 #include <ROOT/RNTupleWriter.hxx>
@@ -67,6 +68,47 @@ GetFieldNamesAndTypes(const ROOT::REntry &entry) {
   return fields;
 }
 
+void initializeInputViews(
+    ROOT::RNTupleReader &reader,
+    const std::vector<std::pair<std::string, enum FieldTypes>> &fields,
+    std::vector<VVec> &inputViewVec) {
+  for (const auto &[fieldName, fieldType] : fields) {
+    switch (fieldType) {
+    case String:
+      inputViewVec.emplace_back(reader.GetView<std::string>(fieldName));
+      break;
+    case Int32:
+      inputViewVec.emplace_back(reader.GetView<std::int32_t>(fieldName));
+      break;
+    case Double:
+      inputViewVec.emplace_back(reader.GetView<double>(fieldName));
+      break;
+    default:
+      throw std::runtime_error("Found an unsupported fieldtype.");
+    }
+  }
+}
+void initializeOutputFields(
+    ROOT::RNTupleModel &model,
+    const std::vector<std::pair<std::string, enum FieldTypes>> &fields,
+    std::vector<OVec> &outputFieldsVec) {
+  for (const auto &[fieldName, fieldType] : fields) {
+    switch (fieldType) {
+    case String:
+      outputFieldsVec.emplace_back(model.MakeField<std::string>(fieldName));
+      break;
+    case Int32:
+      outputFieldsVec.emplace_back(model.MakeField<std::int32_t>(fieldName));
+      break;
+    case Double:
+      outputFieldsVec.emplace_back(model.MakeField<double>(fieldName));
+      break;
+    default:
+      throw std::runtime_error("Found an unsupported fieldtype.");
+    }
+  }
+}
+
 int main(int argc, char **argv) {
   if (argc < 4) {
     std::cerr << "Usage: " << argv[0]
@@ -76,54 +118,28 @@ int main(int argc, char **argv) {
   const char *kNTupleFileName = argv[1];
   const char *kNTupleName = argv[2];
 
-  auto reader = ROOT::RNTupleReader::Open(kNTupleName, kNTupleFileName);
-  auto fields = GetFieldNamesAndTypes(reader->GetModel().GetDefaultEntry());
-
-  std::vector<OVec> outputFieldsVec;
+  std::cout << "Initializing the reader…" << std::endl;
+  std::unique_ptr<ROOT::RNTupleReader> reader =
+      ROOT::RNTupleReader::Open(kNTupleName, kNTupleFileName);
+  std::vector<std::pair<std::string, enum FieldTypes>> fields =
+      GetFieldNamesAndTypes(reader->GetModel().GetDefaultEntry());
   std::vector<VVec> inputViewVec;
-  std::cout << "Initializing the view arrays…" << std::endl;
 
-  for (const auto &[fieldName, fieldType] : fields) {
-    switch (fieldType) {
-    case String:
-      inputViewVec.emplace_back(reader->GetView<std::string>(fieldName));
-      break;
-    case Int32:
-      inputViewVec.emplace_back(reader->GetView<std::int32_t>(fieldName));
-      break;
-    case Double:
-      inputViewVec.emplace_back(reader->GetView<double>(fieldName));
-      break;
-    default:
-      throw std::runtime_error("Found an unsupported fieldtype.");
-    }
-  }
+  initializeInputViews(*reader, fields, inputViewVec);
 
   std::cout << "Initializing the writer…" << std::endl;
-  auto model = ROOT::RNTupleModel::Create();
+  std::unique_ptr<ROOT::RNTupleModel> model = ROOT::RNTupleModel::Create();
+  std::vector<OVec> outputFieldsVec;
 
-  for (const auto &[fieldName, fieldType] : fields) {
-    switch (fieldType) {
-    case String:
-      outputFieldsVec.emplace_back(model->MakeField<std::string>(fieldName));
-      break;
-    case Int32:
-      outputFieldsVec.emplace_back(model->MakeField<std::int32_t>(fieldName));
-      break;
-    case Double:
-      outputFieldsVec.emplace_back(model->MakeField<double>(fieldName));
-      break;
-    default:
-      throw std::runtime_error("Found an unsupported fieldtype.");
-    }
-  }
-  auto options = ROOT::RNTupleWriteOptions();
+  initializeOutputFields(*model, fields, outputFieldsVec);
+
+  ROOT::RNTupleWriteOptions options = ROOT::RNTupleWriteOptions();
   options.SetCompression(ROOT::RCompressionSetting::EAlgorithm::EValues::kZSTD,
                          5);
 
   std::string new_name = kNTupleFileName + std::string(".out");
-  auto writer = ROOT::RNTupleWriter::Recreate(std::move(model), kNTupleName,
-                                              "B2HHH.ntuple.root", options);
+  std::unique_ptr<ROOT::RNTupleWriter> writer = ROOT::RNTupleWriter::Recreate(
+      std::move(model), kNTupleName, "B2HHH.ntuple.root", options);
 
   for (uint64_t i = 0; i < reader->GetNEntries(); ++i) {
     for (size_t field = 0; field < inputViewVec.size(); ++field) {
