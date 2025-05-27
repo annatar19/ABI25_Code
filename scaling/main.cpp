@@ -32,8 +32,6 @@
 #include <variant>
 #include <vector>
 
-using FVec = std::variant<std::vector<std::string>, std::vector<std::int32_t>,
-                          std::vector<double>>;
 using VVec =
     std::variant<ROOT::RNTupleView<std::string>,
                  ROOT::RNTupleView<std::int32_t>, ROOT::RNTupleView<double>>;
@@ -66,9 +64,6 @@ GetFieldNamesAndTypes(const ROOT::REntry &entry) {
     }
   }
 
-  // std::sort(fields.begin(), fields.end(),
-  //           [](auto const &a, auto const &b) { return a.first < b.first; });
-
   return fields;
 }
 
@@ -83,10 +78,7 @@ int main(int argc, char **argv) {
 
   auto reader = ROOT::RNTupleReader::Open(kNTupleName, kNTupleFileName);
   auto fields = GetFieldNamesAndTypes(reader->GetModel().GetDefaultEntry());
-  // reader->GetModel();
 
-  std::vector<std::pair<std::string, int>> fieldMap;
-  std::vector<FVec> inputFieldsVec;
   std::vector<OVec> outputFieldsVec;
   std::vector<VVec> inputViewVec;
   std::cout << "Initializing the view arrays…" << std::endl;
@@ -94,22 +86,13 @@ int main(int argc, char **argv) {
   for (const auto &[fieldName, fieldType] : fields) {
     switch (fieldType) {
     case String:
-      inputFieldsVec.emplace_back(std::in_place_type<std::vector<std::string>>,
-                                  reader->GetNEntries());
       inputViewVec.emplace_back(reader->GetView<std::string>(fieldName));
-      fieldMap.emplace_back(fieldName, FieldTypes::String);
       break;
     case Int32:
-      inputFieldsVec.emplace_back(std::in_place_type<std::vector<std::int32_t>>,
-                                  reader->GetNEntries());
       inputViewVec.emplace_back(reader->GetView<std::int32_t>(fieldName));
-      fieldMap.emplace_back(fieldName, FieldTypes::Int32);
       break;
     case Double:
-      inputFieldsVec.emplace_back(std::in_place_type<std::vector<double>>,
-                                  reader->GetNEntries());
       inputViewVec.emplace_back(reader->GetView<double>(fieldName));
-      fieldMap.emplace_back(fieldName, FieldTypes::Double);
       break;
     default:
       throw std::runtime_error("Found an unsupported fieldtype.");
@@ -143,18 +126,18 @@ int main(int argc, char **argv) {
                                               "B2HHH.ntuple.root", options);
 
   for (uint64_t i = 0; i < reader->GetNEntries(); ++i) {
-    for (size_t field = 0; field < inputFieldsVec.size(); ++field) {
+    for (size_t field = 0; field < inputViewVec.size(); ++field) {
       std::visit(
           overloaded{
-                     [&i](std::shared_ptr<std::string> const &out,
-                         ROOT::RNTupleView<std::string> &in) { *out = in(i); },
-                     [&i](std::shared_ptr<std::int32_t> const &out,
-                         ROOT::RNTupleView<std::int32_t> &in) { *out = in(i); },
-                     [&i](std::shared_ptr<double> const &out,
-                         ROOT::RNTupleView<double> &in) { *out = in(i); },
-                     [&](auto const &a, auto &b) {
-                       throw std::runtime_error("The data got corrupted!");
-                     }},
+              [&i](std::shared_ptr<std::string> const &out,
+                   ROOT::RNTupleView<std::string> &in) { *out = in(i); },
+              [&i](std::shared_ptr<std::int32_t> const &out,
+                   ROOT::RNTupleView<std::int32_t> &in) { *out = in(i); },
+              [&i](std::shared_ptr<double> const &out,
+                   ROOT::RNTupleView<double> &in) { *out = in(i); },
+              [&](auto const &a, auto &b) {
+                throw std::runtime_error("The data got corrupted!");
+              }},
           outputFieldsVec[field], inputViewVec[field]);
     }
     writer->Fill();
