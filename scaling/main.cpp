@@ -34,6 +34,8 @@
 #include <variant>
 #include <vector>
 
+enum FieldTypes { String, Int32, Double };
+
 using VVec =
     std::variant<ROOT::RNTupleView<std::string>,
                  ROOT::RNTupleView<std::int32_t>, ROOT::RNTupleView<double>>;
@@ -42,8 +44,7 @@ using VVec =
 using OVec = std::variant<std::shared_ptr<double>, std::shared_ptr<int>,
                           std::shared_ptr<std::string>>;
 
-enum FieldTypes { String, Int32, Double };
-
+// Needed for the visit.
 template <class... Ts> struct overloaded : Ts... {
   using Ts::operator()...;
 };
@@ -89,6 +90,7 @@ void initializeInputViews(
     }
   }
 }
+
 void initializeOutputFields(
     ROOT::RNTupleModel &model,
     const std::vector<std::pair<std::string, enum FieldTypes>> &fields,
@@ -110,6 +112,41 @@ void initializeOutputFields(
   }
 }
 
+void scaleEntries(const std::unique_ptr<ROOT::RNTupleWriter> writer,
+                  const std::vector<OVec> &outputFieldsVec,
+                  std::vector<VVec> &inputViewVec,
+                  const uint64_t &unscaled_entries,
+                  const uint64_t &scaled_entries) {
+  uint64_t i = 0;
+  uint64_t curUpperLimit = 0;
+  while (i < scaled_entries) {
+    // Say unscaled_entries is 10000 and scaled_entries is 23450. This tenary
+    // will yield 10000, 10000, and then finally 3450. Perhaps it can be done
+    // brachless, but probably not worth the effort and the compiler might do
+    // that in that case.
+    curUpperLimit = (i + unscaled_entries <= scaled_entries)
+                        ? unscaled_entries
+                        : scaled_entries % unscaled_entries;
+    for (uint64_t j = 0; j < curUpperLimit; ++j) {
+      for (size_t field = 0; field < inputViewVec.size(); ++field) {
+        std::visit(
+            overloaded{
+                [&j](const std::shared_ptr<std::string> &out,
+                     ROOT::RNTupleView<std::string> &in) { *out = in(j); },
+                [&j](const std::shared_ptr<std::int32_t> &out,
+                     ROOT::RNTupleView<std::int32_t> &in) { *out = in(j); },
+                [&j](const std::shared_ptr<double> &out,
+                     ROOT::RNTupleView<double> &in) { *out = in(j); },
+                [&](auto const &a, auto &b) {
+                  throw std::runtime_error("The data got corrupted!");
+                }},
+            outputFieldsVec[field], inputViewVec[field]);
+      }
+      writer->Fill();
+    }
+    i += curUpperLimit;
+  }
+}
 int main(int argc, char **argv) {
   if (argc < 4) {
     std::cerr << "Usage: " << argv[0]
@@ -144,46 +181,14 @@ int main(int argc, char **argv) {
   std::unique_ptr<ROOT::RNTupleWriter> writer = ROOT::RNTupleWriter::Recreate(
       std::move(model), kNTupleName, new_name, options);
 
-  long double scale = std::stold(argv[3]);
-  uint64_t unscaled_entries = reader->GetNEntries();
-  uint64_t scaled_entries =
+  std::cout << "Starting the scaling…" << std::endl;
+  const long double scale = std::stold(argv[3]);
+  const uint64_t unscaled_entries = reader->GetNEntries();
+  const uint64_t scaled_entries =
       static_cast<uint64_t>(std::round(scale * unscaled_entries));
 
-  // int tmp = 0; // i
-  // int incr = tmp + unscaled_entries >= scaled_entries
-  //                ? unscaled_entries
-  //                : scaled_entries % unscaled_entries
+  scaleEntries(std::move(writer), outputFieldsVec, inputViewVec,
+               unscaled_entries, scaled_entries);
 
-  std::cout << "scale: " << scale << std::endl;
-  std::cout << "unscaled_entries: " << unscaled_entries << std::endl;
-  std::cout << "scaled_entries: " << scaled_entries << std::endl;
-
-  for (uint64_t i = 0; i < scaled_entries;
-       i += (i + unscaled_entries <= scaled_entries)
-                ? unscaled_entries
-                : scaled_entries % unscaled_entries) {
-    std::cout << "Main loop! i = " << i << std::endl;
-    uint64_t j_upper = (i + unscaled_entries <= scaled_entries)
-                           ? unscaled_entries
-                           : scaled_entries % unscaled_entries;
-
-    std::cout << "Main loop! j_upper = " << j_upper << std::endl;
-    for (uint64_t j = 0; j < j_upper; ++j) {
-      for (size_t field = 0; field < inputViewVec.size(); ++field) {
-        std::visit(
-            overloaded{
-                [&j](std::shared_ptr<std::string> const &out,
-                     ROOT::RNTupleView<std::string> &in) { *out = in(j); },
-                [&j](std::shared_ptr<std::int32_t> const &out,
-                     ROOT::RNTupleView<std::int32_t> &in) { *out = in(j); },
-                [&j](std::shared_ptr<double> const &out,
-                     ROOT::RNTupleView<double> &in) { *out = in(j); },
-                [&](auto const &a, auto &b) {
-                  throw std::runtime_error("The data got corrupted!");
-                }},
-            outputFieldsVec[field], inputViewVec[field]);
-      }
-      writer->Fill();
-    }
-  }
+  std::cout << "Finished the scaling!" << std::endl;
 }
