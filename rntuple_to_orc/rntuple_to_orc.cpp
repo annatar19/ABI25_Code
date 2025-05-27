@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <orc/Common.hh>
 #include <orc/OrcFile.hh>
 #include <orc/Type.hh>
@@ -16,6 +17,7 @@
 
 #include <string>
 #include <variant>
+#include <vector>
 
 enum FieldTypes { String, Int32, Double };
 
@@ -26,10 +28,13 @@ using VVec =
 
 using BVec = std::variant<orc::LongVectorBatch *, orc::DoubleVectorBatch *,
                           orc::StringVectorBatch *>;
-// using BVec =
-//     std::variant<orc::IntegerVectorBatch<long int> *,
-//                  orc::FloatingVectorBatch<double> *, orc::StringVectorBatch
-//                  *>;
+
+// See https://medium.com/@nerudaj/std-visit-is-awesome-heres-why-f183f6437932
+// for why this is needed.
+template <class... Ts> struct overloaded : Ts... {
+  using Ts::operator()...;
+};
+template <class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
 
 std::vector<std::pair<std::string, enum FieldTypes>>
 GetFieldNamesAndTypes(const ROOT::REntry &entry) {
@@ -51,30 +56,10 @@ GetFieldNamesAndTypes(const ROOT::REntry &entry) {
   return fields;
 }
 
-// See https://medium.com/@nerudaj/std-visit-is-awesome-heres-why-f183f6437932
-// for why this is needed.
-template <class... Ts> struct overloaded : Ts... {
-  using Ts::operator()...;
-};
-template <class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
-
-int main(int argc, char **argv) {
-  if (argc < 3) {
-    std::cerr << "Usage: " << argv[0] << " <input.ntuple.root> <RNTuple name>"
-              << std::endl;
-    return 1;
-  }
-
-  const char *kNTupleFileName = argv[1];
-  const char *kNTupleName = argv[2];
-
-  std::cout << "Initializing RNTuple reader…" << std::endl;
-
-  auto reader = ROOT::RNTupleReader::Open(kNTupleName, kNTupleFileName);
-  auto fields = GetFieldNamesAndTypes(reader->GetModel().GetDefaultEntry());
-
+std::vector<VVec> initializeViewVec(
+    std::unique_ptr<ROOT::RNTupleReader> &reader,
+    const std::vector<std::pair<std::string, enum FieldTypes>> &fields) {
   std::vector<VVec> viewVec;
-
   for (const auto &[fieldName, fieldType] : fields) {
     switch (fieldType) {
     case String:
@@ -88,80 +73,57 @@ int main(int argc, char **argv) {
       break;
     }
   }
+  return viewVec;
+}
 
-  std::cout << "Initializing ORC Writer…" << std::endl;
-
-  std::unique_ptr<orc::Type> schema;
-  orc::WriterOptions options;
-  // To set the level equal to RNTuple either that writer has to be changed,
-  // the ORC source code has to be changed or the java convert tool has to be
-  // used. Convert tool slow, but probably the best option.
-  options.setCompression(orc::CompressionKind_ZSTD);
-  std::unique_ptr<orc::Writer> writer;
-  std::unique_ptr<orc::OutputStream> outStream =
-      orc::writeLocalFile( // std::string("../output/") +
-          std::string(kNTupleName) + std::string(".orc"));
-  // If the batchSize is reached it is written to the file. The exact value
-  // was copied from the example code, it is likely not optimal.
-  uint64_t batchSize = 1024;
-
-  // Used to keep track of where in the current batch the loop is;
-  uint64_t rows = 0;
-  // Used later for itterating over fields.
-  uint64_t field_count;
-
-  // These 2 will always exist, regardless of the fields used, so they don't
-  // need to be but inside a std::variant.
-  std::unique_ptr<orc::ColumnVectorBatch> batch;
-  orc::StructVectorBatch *root;
-
-  std::vector<BVec> batches;
-
-  // Orc can use a string for its 'model'.
-  std::string schema_str = "struct<";
-  bool first_field = true;
+std::string buildSchemaStr(
+    const std::vector<std::pair<std::string, enum FieldTypes>> &fields) {
+  std::string schemaStr = "struct<";
+  bool firstField = true;
   for (const auto &[fieldName, fieldType] : fields) {
-    if (!first_field) {
-      schema_str += ",";
+    if (!firstField) {
+      schemaStr += ",";
     }
-    first_field = false;
+    firstField = false;
     switch (fieldType) {
     case FieldTypes::String: {
-      schema_str += fieldName + ":string";
+      schemaStr += fieldName + ":string";
       break;
     }
     case FieldTypes::Int32: {
-      schema_str += fieldName + ":int";
+      schemaStr += fieldName + ":int";
       break;
     }
     case FieldTypes::Double: {
-      schema_str += fieldName + ":double";
+      schemaStr += fieldName + ":double";
       break;
     }
     }
   }
-  schema_str += ">";
-  schema = orc::Type::buildTypeFromString(schema_str);
-  writer = orc::createWriter(*schema, outStream.get(), options);
-  batch = writer->createRowBatch(batchSize);
-  root = dynamic_cast<orc::StructVectorBatch *>(batch.get());
-  // Need to loop a second time to initialize the batches.
+  schemaStr += ">";
+  return schemaStr;
+}
+
+std::vector<BVec> initializeBatchesVec(
+    const orc::StructVectorBatch *root,
+    const std::vector<std::pair<std::string, enum FieldTypes>> &fields) {
+  std::vector<BVec> batchesVec;
   int i = 0;
   for (const auto &[fieldName, fieldType] : fields) {
     switch (fieldType) {
     case FieldTypes::String: {
-      batches.emplace_back(
+      batchesVec.emplace_back(
           dynamic_cast<orc::StringVectorBatch *>(root->fields[i]));
       break;
     }
     case FieldTypes::Int32: {
-      batches.emplace_back(
+      batchesVec.emplace_back(
           dynamic_cast<orc::LongVectorBatch *>(root->fields[i]));
 
       break;
     }
     case FieldTypes::Double: {
-      batches.emplace_back(
+      batchesVec.emplace_back(
           dynamic_cast<orc::DoubleVectorBatch *>(root->fields[i]));
 
       break;
@@ -169,11 +131,25 @@ int main(int argc, char **argv) {
     }
     ++i;
   }
-  std::cout << "Writing ORC…\n";
+  return batchesVec;
+}
 
-  for (uint64_t cur_entry = 0; cur_entry < reader->GetNEntries();
-       cur_entry += batchSize) {
-    uint64_t remaining_rows = reader->GetNEntries() - cur_entry;
+void rntupleToOrc(
+    std::unique_ptr<orc::Writer> writer, std::vector<VVec> &viewVec,
+    const std::vector<std::pair<std::string, enum FieldTypes>> &fields,
+    uint64_t entryCount) {
+
+  // If the batchSize is reached it is written to the file. The exact value
+  // was copied from the example code, it is likely not optimal.
+  uint64_t batchSize = 1024;
+  std::unique_ptr<orc::ColumnVectorBatch> batch =
+      writer->createRowBatch(batchSize);
+  orc::StructVectorBatch *root =
+      dynamic_cast<orc::StructVectorBatch *>(batch.get());
+
+  auto batchesVec = initializeBatchesVec(root, fields);
+  for (uint64_t cur_entry = 0; cur_entry < entryCount; cur_entry += batchSize) {
+    uint64_t remaining_rows = entryCount - cur_entry;
     uint64_t rows_to_add =
         remaining_rows >= batchSize ? batchSize : remaining_rows;
     for (uint64_t field = 0; field < fields.size(); ++field) {
@@ -181,16 +157,13 @@ int main(int argc, char **argv) {
           overloaded{
               [&cur_entry, &rows_to_add](orc::LongVectorBatch *out,
                                          ROOT::RNTupleView<std::int32_t> &in) {
-                std::cout << "long int!" << std::endl;
                 for (uint64_t row = 0; row < rows_to_add; ++row) {
                   out->data[row] = in(row + cur_entry);
                 }
                 out->numElements = rows_to_add;
               },
-              // orc::FloatingVectorBatch<double>
               [&cur_entry, &rows_to_add](orc::DoubleVectorBatch *out,
                                          ROOT::RNTupleView<double> &in) {
-                std::cout << "double!" << std::endl;
                 for (uint64_t row = 0; row < rows_to_add; row++) {
                   out->data[row] = in(row + cur_entry);
                 }
@@ -198,7 +171,6 @@ int main(int argc, char **argv) {
               },
               [&cur_entry, &rows_to_add](orc::StringVectorBatch *out,
                                          ROOT::RNTupleView<std::string> &in) {
-                std::cout << "String!" << std::endl;
                 for (uint64_t row = 0; row < rows_to_add; row++) {
                   const auto &s = in(row + cur_entry);
                   char *copy = strdup(s.c_str());
@@ -215,14 +187,51 @@ int main(int argc, char **argv) {
                 std::cout << "b is: " << typeid(b).name() << std::endl;
                 throw std::runtime_error("The data got corrupted!");
               }},
-          batches[field], viewVec[field]);
+          batchesVec[field], viewVec[field]);
     }
     root->numElements = rows_to_add;
     writer->add(*batch);
   }
-
   // Needed in the case of ORC, no standard flushing when going out of scope.
   writer->close();
+}
+
+int main(int argc, char **argv) {
+  if (argc < 3) {
+    std::cerr << "Usage: " << argv[0] << " <input.ntuple.root> <RNTuple name>"
+              << std::endl;
+    return 1;
+  }
+
+  std::cout << "Initializing RNTuple reader…" << std::endl;
+
+  const char *kNTupleFileName = argv[1];
+  const char *kNTupleName = argv[2];
+
+  auto reader = ROOT::RNTupleReader::Open(kNTupleName, kNTupleFileName);
+  auto fields = GetFieldNamesAndTypes(reader->GetModel().GetDefaultEntry());
+  auto viewVec = initializeViewVec(reader, fields);
+
+  std::cout << "Initializing ORC Writer…" << std::endl;
+
+  std::unique_ptr<orc::Type> schema;
+  orc::WriterOptions options;
+  // To set the level equal to RNTuple either that writer has to be changed,
+  // the ORC source code has to be changed or the java convert tool has to be
+  // used. Convert tool slow, but probably the best option.
+  options.setCompression(orc::CompressionKind_ZSTD);
+  auto outStream =
+      orc::writeLocalFile(std::string("../output/") + std::string(kNTupleName) +
+                          std::string(".orc"));
+
+  // Orc can use a string for its 'model'.
+  auto schema_str = buildSchemaStr(fields);
+  schema = orc::Type::buildTypeFromString(schema_str);
+  auto writer = orc::createWriter(*schema, outStream.get(), options);
+  uint64_t entryCount = reader->GetNEntries();
+
+  std::cout << "Writing ORC…\n";
+  rntupleToOrc(std::move(writer), viewVec, fields, entryCount);
 
   std::cout << "Conversion done!\n";
 
