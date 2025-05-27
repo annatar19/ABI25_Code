@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <orc/Common.hh>
 #include <orc/OrcFile.hh>
 #include <orc/Type.hh>
 #include <orc/Vector.hh>
@@ -16,22 +17,35 @@
 #include <string>
 #include <variant>
 
-using FVec = std::variant<std::vector<std::string>, std::vector<std::int32_t>,
-                          std::vector<std::uint32_t>, std::vector<double>>;
+enum FieldTypes { String, Int32, Double };
+
 using VVec =
     std::variant<ROOT::RNTupleView<std::string>,
                  ROOT::RNTupleView<std::int32_t>,
                  ROOT::RNTupleView<std::uint32_t>, ROOT::RNTupleView<double>>;
+
 using BVec = std::variant<orc::LongVectorBatch *, orc::DoubleVectorBatch *,
                           orc::StringVectorBatch *>;
+// using BVec =
+//     std::variant<orc::IntegerVectorBatch<long int> *,
+//                  orc::FloatingVectorBatch<double> *, orc::StringVectorBatch
+//                  *>;
 
-std::vector<std::pair<std::string, std::string>>
+std::vector<std::pair<std::string, enum FieldTypes>>
 GetFieldNamesAndTypes(const ROOT::REntry &entry) {
-  std::vector<std::pair<std::string, std::string>> fields;
+  std::vector<std::pair<std::string, enum FieldTypes>> fields;
 
   for (const auto &val : entry) {
-    fields.emplace_back(val.GetField().GetFieldName(),
-                        val.GetField().GetTypeName());
+    std::string typeName = val.GetField().GetTypeName();
+    if (typeName == "std::string") {
+      fields.emplace_back(val.GetField().GetFieldName(), FieldTypes::String);
+    } else if (typeName == "std::int32_t") {
+      fields.emplace_back(val.GetField().GetFieldName(), FieldTypes::Int32);
+    } else if (typeName == "double") {
+      fields.emplace_back(val.GetField().GetFieldName(), FieldTypes::Double);
+    } else {
+      throw std::runtime_error("Unsupported fieldtype: " + typeName);
+    }
   }
 
   return fields;
@@ -44,80 +58,51 @@ template <class... Ts> struct overloaded : Ts... {
 };
 template <class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
 
-enum FieldTypes { String, Int32, Uint32, Double };
-
 int main(int argc, char **argv) {
   if (argc < 3) {
     std::cerr << "Usage: " << argv[0] << " <input.ntuple.root> <RNTuple name>"
               << std::endl;
     return 1;
   }
+
   const char *kNTupleFileName = argv[1];
   const char *kNTupleName = argv[2];
+
+  std::cout << "Initializing RNTuple reader…" << std::endl;
 
   auto reader = ROOT::RNTupleReader::Open(kNTupleName, kNTupleFileName);
   auto fields = GetFieldNamesAndTypes(reader->GetModel().GetDefaultEntry());
 
-  std::vector<std::pair<std::string, int>> fieldMap;
-  std::vector<FVec> fieldsVec;
   std::vector<VVec> viewVec;
-  std::cout << "Initializing arrays…" << std::endl;
 
   for (const auto &[fieldName, fieldType] : fields) {
-    if (fieldType == "std::string") {
-      fieldsVec.emplace_back(std::in_place_type<std::vector<std::string>>,
-                             reader->GetNEntries());
+    switch (fieldType) {
+    case String:
       viewVec.emplace_back(reader->GetView<std::string>(fieldName));
-      fieldMap.emplace_back(fieldName, FieldTypes::String);
-    } else if (fieldType == "std::int32_t") {
-      fieldsVec.emplace_back(std::in_place_type<std::vector<std::int32_t>>,
-                             reader->GetNEntries());
+      break;
+    case Int32:
       viewVec.emplace_back(reader->GetView<std::int32_t>(fieldName));
-      fieldMap.emplace_back(fieldName, FieldTypes::Int32);
-    } else if (fieldType == "std::uint32_t") {
-      fieldsVec.emplace_back(std::in_place_type<std::vector<std::uint32_t>>,
-                             reader->GetNEntries());
-      viewVec.emplace_back(reader->GetView<std::uint32_t>(fieldName));
-      fieldMap.emplace_back(fieldName, FieldTypes::Uint32);
-    } else if (fieldType == "double") {
-      fieldsVec.emplace_back(std::in_place_type<std::vector<double>>,
-                             reader->GetNEntries());
+      break;
+    case Double:
       viewVec.emplace_back(reader->GetView<double>(fieldName));
-      fieldMap.emplace_back(fieldName, FieldTypes::Double);
-    } else {
-      std::cerr << "Found an unsupported fieldtype: " << fieldType << std::endl;
-      return 1;
+      break;
     }
   }
 
-  std::cout << "Reading RNTuple into memory…" << std::endl;
-
-  for (size_t field = 0; field < fieldsVec.size(); ++field) {
-    const auto &[fieldName, fieldType] = fields[field];
-    std::visit(
-        [&](auto &dstVec, auto &srcView) {
-          using D = std::decay_t<decltype(dstVec)>;
-          using Elem =
-              std::remove_const_t<std::remove_reference_t<decltype(srcView(
-                  (ROOT::NTupleSize_t)0))>>;
-          if constexpr (std::is_same_v<typename D::value_type, Elem>) {
-            for (size_t i = 0; i < reader->GetNEntries(); ++i) {
-              dstVec[i] = srcView(static_cast<ROOT::NTupleSize_t>(i));
-            }
-          }
-        },
-        fieldsVec[field], viewVec[field]);
-  }
-
-  std::cout << "Starting conversion to Apache ORC…" << std::endl;
+  std::cout << "Initializing ORC Writer…" << std::endl;
 
   std::unique_ptr<orc::Type> schema;
   orc::WriterOptions options;
+  // To set the level equal to RNTuple either that writer has to be changed,
+  // the ORC source code has to be changed or the java convert tool has to be
+  // used. Convert tool slow, but probably the best option.
+  options.setCompression(orc::CompressionKind_ZSTD);
   std::unique_ptr<orc::Writer> writer;
   std::unique_ptr<orc::OutputStream> outStream =
-      orc::writeLocalFile(std::string(kNTupleName) + std::string(".orc"));
-  // If the batchSize is reached it is written to the file. The exact value was
-  // copied from the example code, it is likely not optimal.
+      orc::writeLocalFile( // std::string("../output/") +
+          std::string(kNTupleName) + std::string(".orc"));
+  // If the batchSize is reached it is written to the file. The exact value
+  // was copied from the example code, it is likely not optimal.
   uint64_t batchSize = 1024;
 
   // Used to keep track of where in the current batch the loop is;
@@ -132,12 +117,10 @@ int main(int argc, char **argv) {
 
   std::vector<BVec> batches;
 
-  std::cout << "Initializing ORC structures…\n";
-
   // Orc can use a string for its 'model'.
   std::string schema_str = "struct<";
   bool first_field = true;
-  for (const auto &[fieldName, fieldType] : fieldMap) {
+  for (const auto &[fieldName, fieldType] : fields) {
     if (!first_field) {
       schema_str += ",";
     }
@@ -148,11 +131,6 @@ int main(int argc, char **argv) {
       break;
     }
     case FieldTypes::Int32: {
-      schema_str += fieldName + ":int";
-      break;
-    }
-    case FieldTypes::Uint32: {
-      // Orc does not feature unsigned integers. TODO to check for overflow.
       schema_str += fieldName + ":int";
       break;
     }
@@ -169,7 +147,7 @@ int main(int argc, char **argv) {
   root = dynamic_cast<orc::StructVectorBatch *>(batch.get());
   // Need to loop a second time to initialize the batches.
   int i = 0;
-  for (const auto &[fieldName, fieldType] : fieldMap) {
+  for (const auto &[fieldName, fieldType] : fields) {
     switch (fieldType) {
     case FieldTypes::String: {
       batches.emplace_back(
@@ -177,12 +155,6 @@ int main(int argc, char **argv) {
       break;
     }
     case FieldTypes::Int32: {
-      batches.emplace_back(
-          dynamic_cast<orc::LongVectorBatch *>(root->fields[i]));
-
-      break;
-    }
-    case FieldTypes::Uint32: {
       batches.emplace_back(
           dynamic_cast<orc::LongVectorBatch *>(root->fields[i]));
 
@@ -204,44 +176,46 @@ int main(int argc, char **argv) {
     uint64_t remaining_rows = reader->GetNEntries() - cur_entry;
     uint64_t rows_to_add =
         remaining_rows >= batchSize ? batchSize : remaining_rows;
-    for (uint64_t field = 0; field < fieldsVec.size(); ++field) {
+    for (uint64_t field = 0; field < fields.size(); ++field) {
       std::visit(
           overloaded{
-              [&](orc::LongVectorBatch *b, std::vector<std::int32_t> &f) {
-                for (uint64_t row = 0; row < rows_to_add; row++) {
-                  b->data[row] = f[row + cur_entry];
+              [&cur_entry, &rows_to_add](orc::LongVectorBatch *out,
+                                         ROOT::RNTupleView<std::int32_t> &in) {
+                std::cout << "long int!" << std::endl;
+                for (uint64_t row = 0; row < rows_to_add; ++row) {
+                  out->data[row] = in(row + cur_entry);
                 }
-                b->numElements = rows_to_add;
+                out->numElements = rows_to_add;
               },
-              [&](orc::LongVectorBatch *b, std::vector<std::uint32_t> &f) {
+              // orc::FloatingVectorBatch<double>
+              [&cur_entry, &rows_to_add](orc::DoubleVectorBatch *out,
+                                         ROOT::RNTupleView<double> &in) {
+                std::cout << "double!" << std::endl;
                 for (uint64_t row = 0; row < rows_to_add; row++) {
-                  b->data[row] = f[row + cur_entry];
+                  out->data[row] = in(row + cur_entry);
                 }
-                b->numElements = rows_to_add;
+                out->numElements = rows_to_add;
               },
-              [&](orc::DoubleVectorBatch *b, std::vector<double> &f) {
+              [&cur_entry, &rows_to_add](orc::StringVectorBatch *out,
+                                         ROOT::RNTupleView<std::string> &in) {
+                std::cout << "String!" << std::endl;
                 for (uint64_t row = 0; row < rows_to_add; row++) {
-                  b->data[row] = f[row + cur_entry];
-                }
-                b->numElements = rows_to_add;
-              },
-              [&](orc::StringVectorBatch *b, std::vector<std::string> &f) {
-                for (uint64_t row = 0; row < rows_to_add; row++) {
-                  const auto &s = f[row + cur_entry];
+                  const auto &s = in(row + cur_entry);
                   char *copy = strdup(s.c_str());
-                  b->data[row] = copy;
-                  b->length[row] = static_cast<uint64_t>(s.size());
+                  out->data[row] = copy;
+                  out->length[row] = static_cast<uint64_t>(s.size());
                 }
-                b->numElements = rows_to_add;
+                out->numElements = rows_to_add;
               },
-              // This should never happen, this is mostly here because the
-              // compiler expects functions for all possible variant
-              // combinations.
-              [](auto a, auto b) {
+              // This should never happen, this is mostly here because
+              // the compiler expects functions for all possible
+              // variant combinations.
+              [](auto *a, auto &b) {
+                std::cout << "a is: " << typeid(a).name() << std::endl;
+                std::cout << "b is: " << typeid(b).name() << std::endl;
                 throw std::runtime_error("The data got corrupted!");
-              },
-          },
-          batches[field], fieldsVec[field]);
+              }},
+          batches[field], viewVec[field]);
     }
     root->numElements = rows_to_add;
     writer->add(*batch);
