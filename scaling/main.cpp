@@ -4,6 +4,7 @@
 #include <ROOT/RNTupleWriteOptions.hxx>
 #include <ROOT/RNTupleWriter.hxx>
 // #include <ROOT/RNTupleInspector.hxx>
+#include <cmath>
 #include <iostream>
 
 #include <ROOT/RNTupleUtil.hxx>
@@ -115,12 +116,14 @@ int main(int argc, char **argv) {
               << " <input.ntuple.root> <RNTuple name> <scale>" << std::endl;
     return 1;
   }
-  const char *kNTupleFileName = argv[1];
-  const char *kNTupleName = argv[2];
 
   std::cout << "Initializing the reader…" << std::endl;
+
+  const char *kNTupleFileName = argv[1];
+  const char *kNTupleName = argv[2];
   std::unique_ptr<ROOT::RNTupleReader> reader =
       ROOT::RNTupleReader::Open(kNTupleName, kNTupleFileName);
+
   std::vector<std::pair<std::string, enum FieldTypes>> fields =
       GetFieldNamesAndTypes(reader->GetModel().GetDefaultEntry());
   std::vector<VVec> inputViewVec;
@@ -139,23 +142,48 @@ int main(int argc, char **argv) {
 
   std::string new_name = kNTupleFileName + std::string(".out");
   std::unique_ptr<ROOT::RNTupleWriter> writer = ROOT::RNTupleWriter::Recreate(
-      std::move(model), kNTupleName, "B2HHH.ntuple.root", options);
+      std::move(model), kNTupleName, new_name, options);
 
-  for (uint64_t i = 0; i < reader->GetNEntries(); ++i) {
-    for (size_t field = 0; field < inputViewVec.size(); ++field) {
-      std::visit(
-          overloaded{
-              [&i](std::shared_ptr<std::string> const &out,
-                   ROOT::RNTupleView<std::string> &in) { *out = in(i); },
-              [&i](std::shared_ptr<std::int32_t> const &out,
-                   ROOT::RNTupleView<std::int32_t> &in) { *out = in(i); },
-              [&i](std::shared_ptr<double> const &out,
-                   ROOT::RNTupleView<double> &in) { *out = in(i); },
-              [&](auto const &a, auto &b) {
-                throw std::runtime_error("The data got corrupted!");
-              }},
-          outputFieldsVec[field], inputViewVec[field]);
+  long double scale = std::stold(argv[3]);
+  uint64_t unscaled_entries = reader->GetNEntries();
+  uint64_t scaled_entries =
+      static_cast<uint64_t>(std::round(scale * unscaled_entries));
+
+  // int tmp = 0; // i
+  // int incr = tmp + unscaled_entries >= scaled_entries
+  //                ? unscaled_entries
+  //                : scaled_entries % unscaled_entries
+
+  std::cout << "scale: " << scale << std::endl;
+  std::cout << "unscaled_entries: " << unscaled_entries << std::endl;
+  std::cout << "scaled_entries: " << scaled_entries << std::endl;
+
+  for (uint64_t i = 0; i < scaled_entries;
+       i += (i + unscaled_entries <= scaled_entries)
+                ? unscaled_entries
+                : scaled_entries % unscaled_entries) {
+    std::cout << "Main loop! i = " << i << std::endl;
+    uint64_t j_upper = (i + unscaled_entries <= scaled_entries)
+                           ? unscaled_entries
+                           : scaled_entries % unscaled_entries;
+
+    std::cout << "Main loop! j_upper = " << j_upper << std::endl;
+    for (uint64_t j = 0; j < j_upper; ++j) {
+      for (size_t field = 0; field < inputViewVec.size(); ++field) {
+        std::visit(
+            overloaded{
+                [&j](std::shared_ptr<std::string> const &out,
+                     ROOT::RNTupleView<std::string> &in) { *out = in(j); },
+                [&j](std::shared_ptr<std::int32_t> const &out,
+                     ROOT::RNTupleView<std::int32_t> &in) { *out = in(j); },
+                [&j](std::shared_ptr<double> const &out,
+                     ROOT::RNTupleView<double> &in) { *out = in(j); },
+                [&](auto const &a, auto &b) {
+                  throw std::runtime_error("The data got corrupted!");
+                }},
+            outputFieldsVec[field], inputViewVec[field]);
+      }
+      writer->Fill();
     }
-    writer->Fill();
   }
 }
