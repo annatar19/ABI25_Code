@@ -14,6 +14,7 @@
 #include <orc/Type.hh>
 #include <orc/Vector.hh>
 #include <orc/Writer.hh>
+#include <string>
 
 #include <string>
 #include <variant>
@@ -220,9 +221,32 @@ int main(int argc, char **argv) {
   // the ORC source code has to be changed or the java convert tool has to be
   // used. Convert tool slow, but probably the best option.
   options.setCompression(orc::CompressionKind_ZSTD);
+
+  std::string fn = kNTupleFileName;
+  const char *suffix = ".ntuple.root";
+
+  size_t sl = std::strlen(suffix);
+
+  if (fn.size() >= sl && fn.compare(fn.size() - sl, sl, suffix) == 0) {
+    fn.erase(fn.size() - sl);
+  }
+
+  const char *up = "../";
+  size_t up_len = std::strlen(up);
+  while (fn.size() >= up_len && fn.compare(0, up_len, up) == 0) {
+    fn.erase(0, up_len);
+  }
+  up = "input/";
+  up_len = std::strlen(up);
+  while (fn.size() >= up_len && fn.compare(0, up_len, up) == 0) {
+    fn.erase(0, up_len);
+  }
+
   auto outStream =
-      orc::writeLocalFile(std::string("../output/") + std::string(kNTupleName) +
-                          std::string(".orc"));
+      orc::writeLocalFile(std::string("../output/") + fn + std::string(".orc"));
+  // std::cout << "Output: "
+  //           << std::string("../output/") + fn + std::string(".orc")
+  //           << std::endl;
 
   // Orc can use a string for its 'model'.
   auto schema_str = buildSchemaStr(fields);
