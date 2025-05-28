@@ -444,18 +444,23 @@ void writeTimeStatsCSV(
 }
 
 void writeHeadersCSV(std::ofstream &out, const bool meanRun) {
-  out << "Filename,Data Format,Cache,Number of Runs,";
+  out << "Filename,Number of Runs,Data Format,Cache,";
   if (meanRun) {
-    out << "Mean,STD\n";
-  } else {
     out << "Initialization Mean,Initialization STD,Analysis Mean,Analysis "
            "STD\n";
+  } else {
+    out << "Initialization times,Analysis Times\n";
   }
 }
 
-void writeArgumentsCSV(std::ofstream &out, const std::string &fn,
-                       const uint64_t runs, const bool orcRun,
-                       const bool hotCacheRun, const bool meanRun) {
+void writeArgumentsCSV(std::ofstream &out, std::string fn, const uint64_t runs,
+                       const bool orcRun, const bool hotCacheRun,
+                       const bool meanRun) {
+  namespace fs = std::filesystem;
+  fs::path p(fn);
+  // This is so the relative path to the file is not included in the .csv.
+  fn = p.filename().string();
+
   std::string runsSTR = std::to_string(runs);
   std::string dataFormat = (orcRun ? "ORC" : "RNTuple");
   std::string cacheSetting = (hotCacheRun ? "Hot" : "Cold");
@@ -466,7 +471,7 @@ void writeArgumentsCSV(std::ofstream &out, const std::string &fn,
 void writeCSV(const std::string &fn, const uint64_t runs, const bool orcRun,
               const bool hotCacheRun, const bool meanRun,
               const std::vector<std::pair<uint64_t, uint64_t>> &timeVec) {
-  std::string outputFN = "../output.csv";
+  std::string outputFN = "output.csv";
   std::ofstream out(outputFN, std::ios::app);
 
   namespace fs = std::filesystem;
