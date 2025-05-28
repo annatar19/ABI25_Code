@@ -7,7 +7,10 @@
 #include <TString.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <list>
 #include <orc/OrcFile.hh>
 #include <orc/Reader.hh>
@@ -149,11 +152,6 @@ static std::pair<uint64_t, uint64_t> NTupleDirect(const std::string &path) {
   std::chrono::steady_clock::time_point ts_first =
       std::chrono::steady_clock::now();
   for (auto i : ntuple->GetEntryRange()) {
-    nevents++;
-    if ((nevents % 100000) == 0) {
-      printf("processed %u k events\n", nevents / 1000);
-      // printf("dummy is %lf\n", dummy); abort();
-    }
 
     if (viewH1IsMuon(i) || viewH2IsMuon(i) || viewH3IsMuon(i)) {
       continue;
@@ -193,9 +191,6 @@ static std::pair<uint64_t, uint64_t> NTupleDirect(const std::string &path) {
   auto runtime_analyze =
       std::chrono::duration_cast<std::chrono::microseconds>(ts_end - ts_first)
           .count();
-
-  std::cout << "Runtime-Initialization: " << runtime_init << "us" << std::endl;
-  std::cout << "Runtime-Analysis: " << runtime_analyze << "us" << std::endl;
 
   // ntuple->PrintInfo(ROOT::ENTupleInfo::kMetrics);
   // Show(hMass);
@@ -325,9 +320,6 @@ static std::pair<uint64_t, uint64_t> ORCDirect(const std::string &path) {
       std::chrono::duration_cast<std::chrono::microseconds>(ts_end - ts_first)
           .count();
 
-  std::cout << "Runtime-Initialization: " << runtime_init << "us" << std::endl;
-  std::cout << "Runtime-Analysis: " << runtime_analyze << "us" << std::endl;
-
   // ntuple->PrintInfo(ROOT::ENTupleInfo::kMetrics);
   // Show(hMass);
 
@@ -367,81 +359,151 @@ STD(const std::vector<std::pair<uint64_t, uint64_t>> &timeVec, uint64_t runs,
   return std::pair<double, double>(initSTD, analysisSTD);
 }
 
+std::vector<std::pair<uint64_t, uint64_t>>
+runRNTupleBenchmarks(const std::string &fn, uint64_t runs, bool hotCacheRun) {
+  std::vector<std::pair<uint64_t, uint64_t>> timeVec;
+  // Even with cold cache it needs a warmup.
+  NTupleDirect(fn);
+  if (!hotCacheRun) {
+    clear_cache();
+  }
+
+  for (uint64_t i = 0; i < runs; ++i) {
+    if (!hotCacheRun) {
+      clear_cache();
+    }
+    auto result = NTupleDirect(fn);
+    timeVec.emplace_back(result);
+  }
+
+  return timeVec;
+}
+
+std::vector<std::pair<uint64_t, uint64_t>>
+runOrcBenchmarks(const std::string &fn, uint64_t runs, bool hotCacheRun) {
+  std::vector<std::pair<uint64_t, uint64_t>> timeVec;
+  // Even with cold cache it needs a warmup.
+  ORCDirect(fn);
+  if (!hotCacheRun) {
+    clear_cache();
+  }
+
+  for (uint64_t i = 0; i < runs; ++i) {
+    if (!hotCacheRun) {
+      clear_cache();
+    }
+    auto result = ORCDirect(fn);
+    timeVec.emplace_back(result);
+  }
+
+  return timeVec;
+}
+
+std::string joinJson(const std::vector<uint64_t> &v) {
+  std::ostringstream oss;
+  oss << '[';
+  for (size_t i = 0; i < v.size(); ++i) {
+    if (i)
+      oss << ',';
+    oss << v[i];
+  }
+  oss << ']';
+  return oss.str();
+}
+
+void writeTimeVecCSV(
+    std::ofstream &out, const std::string &fn,
+    const std::vector<std::pair<uint64_t, uint64_t>> &timeVec) {
+  std::vector<uint64_t> firsts, seconds;
+  firsts.reserve(timeVec.size());
+  seconds.reserve(timeVec.size());
+
+  for (const auto &p : timeVec) {
+    firsts.push_back(p.first);
+    seconds.push_back(p.second);
+  }
+
+  out << '"' << joinJson(firsts) << '"' << ',' << '"' << joinJson(seconds)
+      << '"' << "\n";
+}
+
+void writeTimeStatsCSV(
+    std::ofstream &out, const uint64_t runs,
+    const std::vector<std::pair<uint64_t, uint64_t>> &timeVec) {
+  const auto &[initMean, analysisMean] = mean(timeVec, runs);
+  const auto &[initSTD, analysisSTD] =
+      STD(timeVec, runs, initMean, analysisMean);
+
+  std::string initMeanSTR = std::to_string(initMean);
+  std::string analysisMeanSTR = std::to_string(analysisMean);
+  std::string initSTDSTR = std::to_string(initSTD);
+  std::string analysisSTDSTR = std::to_string(analysisSTD);
+
+  out << initMeanSTR << "," << initSTDSTR << "," << analysisMeanSTR << ","
+      << analysisSTDSTR << "\n";
+}
+
+void writeHeadersCSV(std::ofstream &out, const bool meanRun) {
+  out << "Filename,Data Format,Cache,Number of Runs,";
+  if (meanRun) {
+    out << "Mean,STD\n";
+  } else {
+    out << "Initialization Mean,Initialization STD,Analysis Mean,Analysis "
+           "STD\n";
+  }
+}
+
+void writeArgumentsCSV(std::ofstream &out, const std::string &fn,
+                       const uint64_t runs, const bool orcRun,
+                       const bool hotCacheRun, const bool meanRun) {
+  std::string runsSTR = std::to_string(runs);
+  std::string dataFormat = (orcRun ? "ORC" : "RNTuple");
+  std::string cacheSetting = (hotCacheRun ? "Hot" : "Cold");
+  out << fn << "," << runsSTR << "," << dataFormat << "," << cacheSetting
+      << ",";
+}
+
+void writeCSV(const std::string &fn, const uint64_t runs, const bool orcRun,
+              const bool hotCacheRun, const bool meanRun,
+              const std::vector<std::pair<uint64_t, uint64_t>> &timeVec) {
+  std::string outputFN = "../output.csv";
+  std::ofstream out(outputFN, std::ios::app);
+
+  namespace fs = std::filesystem;
+  if (!fs::exists(outputFN) || fs::file_size(outputFN) == 0) {
+    writeHeadersCSV(out, meanRun);
+  }
+  writeArgumentsCSV(out, fn, runs, orcRun, hotCacheRun, meanRun);
+  if (meanRun) {
+    writeTimeStatsCSV(out, runs, timeVec);
+  } else {
+    writeTimeVecCSV(out, fn, timeVec);
+  }
+}
+
 int main(int argc, char **argv) {
-  if (argc < 3 || (std::atoi(argv[2]) != 0 && std::atoi(argv[2]) != 1)) {
+  if (argc != 6 || (std::atoi(argv[3]) != 0 && std::atoi(argv[3]) != 1) ||
+      (std::atoi(argv[4]) != 0 && std::atoi(argv[4]) != 1) ||
+      (std::atoi(argv[5]) != 0 && std::atoi(argv[5]) != 1)) {
     std::cerr << "Usage: " << argv[0]
-              << " <# runs> <0: cold cache, 1: hot cache>" << std::endl;
+              << " <filename> <# runs> <0: RNTuple, 1: ORC> <0: cold cache, 1: "
+                 "hot cache> "
+                 "<0: Scatter, 1: Mean and std>"
+              << std::endl;
     return 1;
   }
-  // -------------------------------------------------------------------------
-  // RNTUPLE
-  // -------------------------------------------------------------------------
-  uint64_t runs = std::atoi(argv[1]);
-  bool hot_cache = static_cast<bool>(std::atoi(argv[2]));
-  // Even with cold cache it needs a warmup.
-  NTupleDirect("B2HHH.ntuple.root");
-  if (!hot_cache) {
-    clear_cache();
-  }
-  std::vector<std::pair<uint64_t, uint64_t>> timeVec;
-  std::cout << "Running RNTuple benchmarks…\n";
-  for (uint64_t i = 0; i < runs; ++i) {
-    std::cout << "Running itteration " << i + 1 << "…\n";
-    if (!hot_cache) {
-      clear_cache();
-    }
-    auto result = NTupleDirect("B2HHH.ntuple.root");
-    timeVec.emplace_back(result);
-    // i-1 to account for the skipped initial cold run.
-    const auto &[init, analyze] = timeVec[i];
-    std::cout << "\tItteration " << i + 1 << " initialization took: " << init
-              << " us and analysis took: " << analyze << " us\n";
-  }
-  const auto &[initMean, analysisMean] = mean(timeVec, runs);
-  const auto &[initSTD, analysisSTD] =
-      STD(timeVec, runs, initMean, analysisMean);
+  // The data should always be DecayTree, or something with the same column
+  // names and types, but the file name can change a little if scaled versions
+  // are used.
+  const std::string fn = std::string(argv[1]);
+  const uint64_t runs = std::atoi(argv[2]);
+  const bool orcRun = static_cast<bool>(std::atoi(argv[3]));
+  const bool hotCacheRun = static_cast<bool>(std::atoi(argv[4]));
+  const bool meanRun = static_cast<bool>(std::atoi(argv[5]));
 
-  std::cout << "On average initialization took: " << initMean << " ± "
-            << initSTD << " us\n";
-  std::cout << "On average analysis took: " << analysisMean << " ± "
-            << analysisSTD << " us\n";
-
-  // -------------------------------------------------------------------------
-  // ORC
-  // -------------------------------------------------------------------------
-
-  uint64_t runs = std::atoi(argv[1]);
-  bool hot_cache = static_cast<bool>(std::atoi(argv[2]));
-  // Even with cold cache it needs a warmup.
-  ORCDirect("DecayTree.orc");
-  if (!hot_cache) {
-    clear_cache();
-  }
-
-  std::cout << "Running ORC benchmarks…\n";
-  std::vector<std::pair<uint64_t, uint64_t>> timeVec;
-  std::cout << "Running RNTuple benchmarks…\n";
-  for (uint64_t i = 0; i < runs; ++i) {
-    std::cout << "Running itteration " << i + 1 << "…\n";
-    if (!hot_cache) {
-      clear_cache();
-    }
-    auto result = ORCDirect("DecayTree.orc");
-    timeVec.emplace_back(result);
-    // i-1 to account for the skipped initial cold run.
-    const auto &[init, analyze] = timeVec[i];
-    std::cout << "\tItteration " << i + 1 << " initialization took: " << init
-              << " us and analysis took: " << analyze << " us\n";
-  }
-
-  const auto &[initMean, analysisMean] = mean(timeVec, runs);
-  const auto &[initSTD, analysisSTD] =
-      STD(timeVec, runs, initMean, analysisMean);
-
-  std::cout << "On average initialization took: " << initMean << " ± "
-            << initSTD << " us\n";
-  std::cout << "On average analysis took: " << analysisMean << " ± "
-            << analysisSTD << " us\n";
+  auto timeVec = orcRun ? runOrcBenchmarks(fn, runs, hotCacheRun)
+                        : runRNTupleBenchmarks(fn, runs, hotCacheRun);
+  writeCSV(fn, runs, orcRun, hotCacheRun, meanRun, timeVec);
 
   return 0;
 }

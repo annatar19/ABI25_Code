@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(lhcb_rntuple_orc)
+project(benchmarks)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -34,9 +34,9 @@ find_package(ROOT CONFIG REQUIRED
     Gpad      # for TPad
 )
 
-add_executable(lhcb_rntuple_orc lhcb_rntuple_orc.cpp)
+add_executable(benchmarks benchmarks.cpp)
 
-target_link_libraries(lhcb_rntuple_orc
+target_link_libraries(benchmarks
   PRIVATE
     orc::orc
     ROOT::ROOTNTuple
