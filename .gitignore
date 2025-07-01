@@ -6,3 +6,4 @@
 !run.sh
 !**/*.cpp
 **/build/**/*.cpp
+root_src/

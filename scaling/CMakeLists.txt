@@ -13,9 +13,6 @@ endif()
 set(CMAKE_EXPORT_COMPILE_COMMANDS
     ON CACHE BOOL "Generate compile_commands.json")
 
-set(ROOT_DIR "/home/annatar/studie/abi25/root/root-build"
-    CACHE PATH "Path to the ROOT installation")
-
 find_package(ROOT CONFIG REQUIRED
     COMPONENTS
       ROOTNTuple

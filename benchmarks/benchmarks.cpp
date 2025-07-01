@@ -24,6 +24,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <tuple>
 #include <unistd.h>
 
 #include <cassert>
@@ -49,7 +50,6 @@
 #include <TTree.h>
 #include <TTreePerfStats.h>
 #include <TTreeReader.h>
-#include <unordered_map>
 #include <vector>
 
 enum selected_indices {
@@ -111,7 +111,9 @@ static void Show(TH1D *h) {
 }
 
 // static void NTupleDirect(const std::string &path) {
-static std::pair<uint64_t, uint64_t> NTupleDirect(const std::string &path) {
+// static std::pair<uint64_t, uint64_t> NTupleDirect(const std::string &path) {
+static std::tuple<uint64_t, uint64_t, double>
+NTupleDirect(const std::string &path) {
   using RNTupleReader = ROOT::RNTupleReader;
   using RNTupleModel = ROOT::RNTupleModel;
 
@@ -193,18 +195,24 @@ static std::pair<uint64_t, uint64_t> NTupleDirect(const std::string &path) {
           .count();
 
   // ntuple->PrintInfo(ROOT::ENTupleInfo::kMetrics);
-  // Show(hMass);
+  Show(hMass);
+
+  // Total events divided by total analysis time. Time is converted from
+  // microseconds to seconds.
+  double eventsPerSec = static_cast<double>(ntuple->GetNEntries()) /
+                        (runtime_analyze / 1'000'000.0);
 
   delete hMass;
-  std::pair<uint64_t, uint64_t> times = {
+  std::tuple<uint64_t, uint64_t, double> times = {
       static_cast<uint64_t>(runtime_init),
-      static_cast<uint64_t>(runtime_analyze)};
+      static_cast<uint64_t>(runtime_analyze), eventsPerSec};
+
   return times;
 }
 
 // static void ORCDirect(const std::string &path) {
-static std::pair<uint64_t, uint64_t> ORCDirect(const std::string &path) {
-
+static std::tuple<uint64_t, uint64_t, double>
+ORCDirect(const std::string &path) {
   auto ts_init = std::chrono::steady_clock::now();
 
   std::unique_ptr<orc::InputStream> inStream = orc::readLocalFile(path);
@@ -323,45 +331,59 @@ static std::pair<uint64_t, uint64_t> ORCDirect(const std::string &path) {
   // ntuple->PrintInfo(ROOT::ENTupleInfo::kMetrics);
   // Show(hMass);
 
+  // Total events divided by total analysis time. Time is converted from
+  // microseconds to seconds.
+  double eventsPerSec = static_cast<double>(reader->getNumberOfRows()) /
+                        (runtime_analyze / 1'000'000.0);
+
   delete hMass;
-  std::pair<uint64_t, uint64_t> times = {
+  std::tuple<uint64_t, uint64_t, double> times = {
       static_cast<uint64_t>(runtime_init),
-      static_cast<uint64_t>(runtime_analyze)};
+      static_cast<uint64_t>(runtime_analyze), eventsPerSec};
   return times;
 }
 
-std::pair<double, double>
-mean(const std::vector<std::pair<uint64_t, uint64_t>> &timeVec, uint64_t runs) {
-  double initMean = 0.0, analysisMean = 0.0;
+std::tuple<double, double, double>
+mean(const std::vector<std::tuple<uint64_t, uint64_t, double>> &timeVec,
+     uint64_t runs) {
+  double initMean = 0.0, analysisMean = 0.0, throughputMean = 0.0;
   for (uint64_t i = 0; i < runs; ++i) {
-    const auto &[init, analysis] = timeVec[i];
+    const auto &[init, analysis, throughput] = timeVec[i];
     initMean += static_cast<double>(init);
     analysisMean += static_cast<double>(analysis);
+    throughputMean += throughput;
   }
   initMean /= runs;
   analysisMean /= runs;
-  return std::pair<double, double>(initMean, analysisMean);
+  throughputMean /= runs;
+  return std::tuple<double, double, double>(initMean, analysisMean,
+                                            throughputMean);
 }
 
-std::pair<double, double>
-STD(const std::vector<std::pair<uint64_t, uint64_t>> &timeVec, uint64_t runs,
-    double initMean, double analysisMean) {
-  double initSTD = 0.0, analysisSTD = 0.0;
+std::tuple<double, double, double>
+STD(const std::vector<std::tuple<uint64_t, uint64_t, double>> &timeVec,
+    uint64_t runs, double initMean, double analysisMean,
+    double throughputMean) {
+  double initSTD = 0.0, analysisSTD = 0.0, throughputSTD = 0.0;
   for (uint64_t i = 0; i < runs; ++i) {
-    const auto &[init, analysis] = timeVec[i];
+    const auto &[init, analysis, throughput] = timeVec[i];
     initSTD += pow(static_cast<double>(init) - initMean, 2.0);
     analysisSTD += pow(static_cast<double>(analysis) - analysisMean, 2.0);
+    throughputSTD += pow(throughput - throughputMean, 2.0);
   }
   initSTD /= runs;
   initSTD = sqrt(initSTD);
   analysisSTD /= runs;
   analysisSTD = sqrt(analysisSTD);
-  return std::pair<double, double>(initSTD, analysisSTD);
+  throughputSTD /= runs;
+  throughputSTD = sqrt(throughputSTD);
+  return std::tuple<double, double, double>(initSTD, analysisSTD,
+                                            throughputSTD);
 }
 
-std::vector<std::pair<uint64_t, uint64_t>>
+std::vector<std::tuple<uint64_t, uint64_t, double>>
 runRNTupleBenchmarks(const std::string &fn, uint64_t runs, bool hotCacheRun) {
-  std::vector<std::pair<uint64_t, uint64_t>> timeVec;
+  std::vector<std::tuple<uint64_t, uint64_t, double>> timeVec;
   // Even with cold cache it needs a warmup.
   NTupleDirect(fn);
   if (!hotCacheRun) {
@@ -379,9 +401,9 @@ runRNTupleBenchmarks(const std::string &fn, uint64_t runs, bool hotCacheRun) {
   return timeVec;
 }
 
-std::vector<std::pair<uint64_t, uint64_t>>
+std::vector<std::tuple<uint64_t, uint64_t, double>>
 runOrcBenchmarks(const std::string &fn, uint64_t runs, bool hotCacheRun) {
-  std::vector<std::pair<uint64_t, uint64_t>> timeVec;
+  std::vector<std::tuple<uint64_t, uint64_t, double>> timeVec;
   // Even with cold cache it needs a warmup.
   ORCDirect(fn);
   if (!hotCacheRun) {
@@ -411,45 +433,65 @@ std::string joinJson(const std::vector<uint64_t> &v) {
   return oss.str();
 }
 
+std::string joinJson(const std::vector<double> &v) {
+  std::ostringstream oss;
+  oss << '[';
+  for (size_t i = 0; i < v.size(); ++i) {
+    if (i)
+      oss << ',';
+    oss << v[i];
+  }
+  oss << ']';
+  return oss.str();
+}
+
+// For the scatterplot.
 void writeTimeVecCSV(
     std::ofstream &out, const std::string &fn,
-    const std::vector<std::pair<uint64_t, uint64_t>> &timeVec) {
-  std::vector<uint64_t> firsts, seconds;
-  firsts.reserve(timeVec.size());
-  seconds.reserve(timeVec.size());
+    const std::vector<std::tuple<uint64_t, uint64_t, double>> &timeVec) {
+  std::vector<uint64_t> initTimes, analysisTimes;
+  std::vector<double> throughputs;
+  initTimes.reserve(timeVec.size());
+  analysisTimes.reserve(timeVec.size());
+  throughputs.reserve(timeVec.size());
 
-  for (const auto &p : timeVec) {
-    firsts.push_back(p.first);
-    seconds.push_back(p.second);
+  for (const auto &t : timeVec) {
+    initTimes.push_back(std::get<0>(t));
+    analysisTimes.push_back(std::get<1>(t));
+    throughputs.push_back(std::get<2>(t));
   }
 
-  out << '"' << joinJson(firsts) << '"' << ',' << '"' << joinJson(seconds)
+  out << '"' << joinJson(initTimes) << '"' << ',' << '"'
+      << joinJson(analysisTimes) << '"' << ',' << '"' << joinJson(throughputs)
       << '"' << "\n";
 }
 
 void writeTimeStatsCSV(
     std::ofstream &out, const uint64_t runs,
-    const std::vector<std::pair<uint64_t, uint64_t>> &timeVec) {
-  const auto &[initMean, analysisMean] = mean(timeVec, runs);
-  const auto &[initSTD, analysisSTD] =
-      STD(timeVec, runs, initMean, analysisMean);
+    const std::vector<std::tuple<uint64_t, uint64_t, double>> &timeVec) {
+  const auto &[initMean, analysisMean, throughputMean] = mean(timeVec, runs);
+  const auto &[initSTD, analysisSTD, throughputSTD] =
+      STD(timeVec, runs, initMean, analysisMean, throughputMean);
 
   std::string initMeanSTR = std::to_string(initMean);
   std::string analysisMeanSTR = std::to_string(analysisMean);
+  std::string throughputMeanSTR = std::to_string(throughputMean);
   std::string initSTDSTR = std::to_string(initSTD);
   std::string analysisSTDSTR = std::to_string(analysisSTD);
+  std::string throughputSTDSTR = std::to_string(throughputSTD);
 
   out << initMeanSTR << "," << initSTDSTR << "," << analysisMeanSTR << ","
-      << analysisSTDSTR << "\n";
+      << analysisSTDSTR << "," << throughputMeanSTR << "," << throughputSTDSTR
+      << "\n";
 }
 
 void writeHeadersCSV(std::ofstream &out, const bool meanRun) {
   out << "Filename,Number of Runs,Data Format,Cache,";
   if (meanRun) {
     out << "Initialization Mean,Initialization STD,Analysis Mean,Analysis "
-           "STD\n";
+           "STD,Events/sec Mean,Events/sec STD\n";
   } else {
-    out << "Initialization times,Analysis Times\n";
+    out << "Initialization times,Analysis Times, Events/sec\n";
   }
 }
 
@@ -468,10 +510,21 @@ void writeArgumentsCSV(std::ofstream &out, std::string fn, const uint64_t runs,
       << ",";
 }
 
-void writeCSV(const std::string &fn, const uint64_t runs, const bool orcRun,
-              const bool hotCacheRun, const bool meanRun,
-              const std::vector<std::pair<uint64_t, uint64_t>> &timeVec) {
+void writeCSV(
+    const std::string &fn, const uint64_t runs, const bool orcRun,
+    const bool hotCacheRun, const bool meanRun,
+    const std::vector<std::tuple<uint64_t, uint64_t, double>> &timeVec) {
   std::string outputFN = "output.csv";
+  if (hotCacheRun) {
+    outputFN = "hot_" + outputFN;
+  } else {
+    outputFN = "cold_" + outputFN;
+  }
+  if (meanRun) {
+    outputFN = "stats_" + outputFN;
+  } else {
+    outputFN = "scatter_" + outputFN;
+  }
   std::ofstream out(outputFN, std::ios::app);
 
   namespace fs = std::filesystem;

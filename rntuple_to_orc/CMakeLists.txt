@@ -13,8 +13,8 @@ endif()
 set(CMAKE_EXPORT_COMPILE_COMMANDS
     ON CACHE BOOL "Generate compile_commands.json")
 
-set(ORC_DIR "/home/annatar/repos/orc/build/lib/cmake/orc")
-list(APPEND CMAKE_PREFIX_PATH "${ORC_DIR}")
+# set(ORC_DIR "/home/annatar/repos/orc/build/lib/cmake/orc")
+# list(APPEND CMAKE_PREFIX_PATH "${ORC_DIR}")
 
 find_package(ORC CONFIG REQUIRED
     COMPONENTS orc

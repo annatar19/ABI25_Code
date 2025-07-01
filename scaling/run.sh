@@ -2,6 +2,9 @@
 
 set -e
 
+FILES_LIST="files.txt"
+SCALE_UPPER_LIMIT=1
+
 mkdir -p output
 
 while IFS=' ' read -r first second; do
@@ -10,9 +13,9 @@ while IFS=' ' read -r first second; do
         echo "Scaling $first to $i"
         ./rntuple_scaling "$first" "$second" "$i" >/dev/null
     done
-    for i in {1..10}; do
+    for ((i = 1; i <= SCALE_UPPER_LIMIT; i++)); do
         echo "Scaling $first to $i"
         ./rntuple_scaling "$first" "$second" "$i" >/dev/null
     done
     cd ../
-done <files.txt
+done <"$FILES_LIST"

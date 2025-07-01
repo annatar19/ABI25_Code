@@ -220,7 +220,8 @@ int main(int argc, char **argv) {
   // To set the level equal to RNTuple either that writer has to be changed,
   // the ORC source code has to be changed or the java convert tool has to be
   // used. Convert tool slow, but probably the best option.
-  options.setCompression(orc::CompressionKind_ZSTD);
+  // options.setCompression(orc::CompressionKind_ZSTD);
+  options.setCompression(orc::CompressionKind_NONE);
 
   std::string fn = kNTupleFileName;
   const char *suffix = ".ntuple.root";

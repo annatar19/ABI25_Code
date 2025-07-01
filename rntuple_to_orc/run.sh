@@ -13,7 +13,7 @@ cd ../
 
 while IFS=' ' read -r postfix access; do
     for file in input/*"$postfix"; do
-        echo "Converting $file to ORC…"
+        echo "Generating ORC from $file…"
 
         cd build
         ./rntuple_to_orc "../$file" "$access" >/dev/null

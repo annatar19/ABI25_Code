@@ -147,6 +147,7 @@ void scaleEntries(const std::unique_ptr<ROOT::RNTupleWriter> writer,
     i += curUpperLimit;
   }
 }
+
 int main(int argc, char **argv) {
   if (argc < 4) {
     std::cerr << "Usage: " << argv[0]
@@ -158,8 +159,8 @@ int main(int argc, char **argv) {
 
   const char *kNTupleFileName = argv[1];
   const char *kNTupleName = argv[2];
-  std::unique_ptr<ROOT::RNTupleReader> reader =
-      ROOT::RNTupleReader::Open(kNTupleName, kNTupleFileName);
+  std::unique_ptr<ROOT::RNTupleReader> reader = ROOT::RNTupleReader::Open(
+      kNTupleName, std::string("../") + kNTupleFileName);
 
   std::vector<std::pair<std::string, enum FieldTypes>> fields =
       GetFieldNamesAndTypes(reader->GetModel().GetDefaultEntry());
@@ -174,8 +175,10 @@ int main(int argc, char **argv) {
   initializeOutputFields(*model, fields, outputFieldsVec);
 
   ROOT::RNTupleWriteOptions options = ROOT::RNTupleWriteOptions();
+  // The ORC C++ writer defaults to ZSTD level 3. The RNTuple equivalent of that
+  // is 1.
   options.SetCompression(ROOT::RCompressionSetting::EAlgorithm::EValues::kZSTD,
-                         5);
+                         1);
 
   // The scaled file is outputted to the output dir with the scaling factor
   // prepended.
