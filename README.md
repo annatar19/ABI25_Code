@@ -1,5 +1,4 @@
 The RNTuple to ndjson converter used for validation can be found here:
-
   https://github.com/annatar19/ABI25_to_json
 
 The ORC to ndjson converter used for validation can be found here:
